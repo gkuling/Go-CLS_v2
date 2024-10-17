@@ -1,10 +1,10 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-r_n = 20        # number of repeats
-nepoch = 2000
+r_n = 1        # number of repeats
+nepoch = 200
 learnrate = 0.0015
-N_x_t = 100     # teacher input dimension
+N_x_t = 10     # teacher input dimension
 N_y_t = 1       # teacher output dimension
 P = 100           # number of training examples
 P_test = 1000   # number of testing examples
@@ -168,7 +168,7 @@ for r in range(1,r_n+1,1):
             else:
                 clamp = 0
 
-            M_input = Activity_fix_t + (N_patterns * clamp)
+            M_input = Activity_fix_t + (Activity_dyn_t * clamp)
 
             M_current = M_input @ W_N
 
