@@ -5,6 +5,7 @@ from project_team.dt_project.DataProcessors._Processor import _Processor
 import pandas as pd
 import torch
 from tqdm import tqdm
+
 class TSNModel_config(proteam.models.project_config):
     def __init__(self,
                  S_x=100,
@@ -329,7 +330,6 @@ class TSNPractitioner(object):
             w_delta -= self.model.forward(
                 np.matmul(N_S_input.T, N_S_input)
             )['student']
-            w_delta /= np.linalg.norm(w_delta)
             self.model.W_s = self.model.W_s + self.config.lr * w_delta
 
         # Seed the notebook with original patterns to calculate training error.
@@ -346,126 +346,3 @@ class TSNPractitioner(object):
                 'notebook_test_error': N_test_error}
 
 
-
-mdl_config = TSNModel_config()
-dt_config = TSN_DTProcessor_config()
-pt_config = TSNPractitioner_config(
-    n_epochs=2000,
-    lr=0.0015
-)
-
-r_n = 1        # number of repeats
-
-# Storing train error, test error, reactivation error (driven by
-# notebook)
-# Without early stopping (r_n, nepoch)
-train_error_all = []     # student train error
-test_error_all = []     # student test error
-N_train_error_all = []   # notebook train error
-N_test_error_all = []    # notebook test error
-
-# With early stopping (r_n, nepoch)
-train_error_all_es = []     # student train error
-test_error_all_es = []      # student test error
-
-# Run simulation for r_n times
-for r in range(r_n):
-    print('Running Simulation: ' + str(r))
-    np.random.seed(r) #set random seed for reproducibility
-
-    # Errors
-    error_train_vector = []
-    error_test_vector = []
-    error_react_vector = []
-
-    dt_processor = TSN_DTProcessor(dt_config)
-    dt_processor.generate_data()
-
-    mdl = TSNModel(mdl_config)
-
-    pt = TSNPractitioner(config=pt_config, model=mdl, dt_processor=dt_processor)
-
-    errors = pt.train()
-
-    train_error_all.append(errors['student_train_error'])
-    test_error_all.append(errors['student_test_error'])
-    N_train_error_all.append(errors['notebook_train_error'])
-    N_test_error_all.append(errors['notebook_test_error'])
-
-    # Early stopping
-    min_p = np.argmin(errors['student_train_error'])  # Find index of
-    # minimum test error
-    train_error_early_stop = errors['student_train_error'].copy()
-    train_error_early_stop[min_p + 1:] = errors['student_train_error'][
-        min_p]  # Set subsequent values to the minimum point
-
-    test_error_early_stop = errors['student_test_error'].copy()
-    test_error_early_stop[min_p + 1:] = errors['student_test_error'][
-        min_p]  # Set subsequent values to the minimum point
-
-    # Store early stopped errors
-    train_error_all_es.append(train_error_early_stop)
-    test_error_all_es.append(test_error_early_stop)
-    print('Simulation ' + str(r) + ' complete.')
-    print('-----------------------------------')
-
-# Define color scheme and plot settings
-color_scheme = np.array([[137, 152, 193], [245, 143, 136]]) / 255
-line_w = 2
-font_s = 12
-
-train_error_all = np.array(train_error_all)
-test_error_all = np.array(test_error_all)
-N_train_error_all = np.array(N_train_error_all)
-N_test_error_all = np.array(N_test_error_all)
-train_error_all_es = np.array(train_error_all_es)
-test_error_all_es = np.array(test_error_all_es)
-# Plot without early stopping
-plt.figure(figsize=(4.5, 4))  # Similar to setting figure position and size in MATLAB
-plt.plot(range(pt_config.n_epochs), np.mean(train_error_all, axis=0),
-         color=color_scheme[0],
-         linewidth=line_w, label='Train Error')
-plt.plot(range(pt_config.n_epochs), np.mean(test_error_all, axis=0), color=color_scheme[1], linewidth=line_w, label='Test Error')
-plt.plot(range(pt_config.n_epochs), np.mean(N_train_error_all, axis=0), 'b--', linewidth=line_w, label='N Train Error')
-plt.plot(range(pt_config.n_epochs), np.mean(N_test_error_all, axis=0), 'r--', linewidth=line_w, label='N Test Error')
-
-plt.xlabel('Epoch', fontsize=font_s, color='k')
-plt.ylabel('Error', fontsize=font_s, color='k')
-plt.xlim([0, pt_config.n_epochs])
-plt.ylim([0, 2])
-plt.gca().spines['top'].set_linewidth(1)
-plt.gca().spines['right'].set_linewidth(1)
-plt.gca().spines['bottom'].set_linewidth(1)
-plt.gca().spines['left'].set_linewidth(1)
-plt.xticks(fontsize=font_s)
-plt.yticks(fontsize=font_s)
-plt.legend()
-plt.tight_layout()
-
-# Optional: Save the plot
-# plt.savefig(f'Errors_No_ES_SNR_{SNR}_{date.today()}.pdf')
-
-# Plot with early stopping
-plt.figure(figsize=(4.5, 4))  # Similar to setting figure position and size in MATLAB
-plt.plot(range(pt_config.n_epochs), np.mean(train_error_all_es, axis=0), color=color_scheme[0], linewidth=line_w, label='Train Error (ES)')
-plt.plot(range(pt_config.n_epochs), np.mean(test_error_all_es, axis=0), color=color_scheme[1], linewidth=line_w, label='Test Error (ES)')
-plt.plot(range(pt_config.n_epochs), np.mean(N_train_error_all, axis=0), 'b--', linewidth=line_w, label='N Train Error')
-plt.plot(range(pt_config.n_epochs), np.mean(N_test_error_all, axis=0), 'r--', linewidth=line_w, label='N Test Error')
-
-plt.xlabel('Epoch', fontsize=font_s, color='k')
-plt.ylabel('Error', fontsize=font_s, color='k')
-plt.xlim([0, pt_config.n_epochs])
-plt.ylim([0, 2])
-plt.gca().spines['top'].set_linewidth(1)
-plt.gca().spines['right'].set_linewidth(1)
-plt.gca().spines['bottom'].set_linewidth(1)
-plt.gca().spines['left'].set_linewidth(1)
-plt.xticks(fontsize=font_s)
-plt.yticks(fontsize=font_s)
-plt.legend()
-plt.tight_layout()
-
-
-plt.show()
-
-print('debug')
