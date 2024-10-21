@@ -4,8 +4,10 @@ import project_team as proteam
 from project_team.dt_project.DataProcessors._Processor import _Processor
 import pandas as pd
 import torch
+from project_team.ml_project import PT_Practitioner
 from tqdm import tqdm
-
+from torch.nn.functional import linear
+from torch.nn import functional as F
 class TSNModel_config(proteam.models.project_config):
     def __init__(self,
                  S_x=100,
@@ -30,9 +32,12 @@ class TSNModel_config(proteam.models.project_config):
         self.N_U = N_U
         self.N_ncycle = N_ncycle
 
-class TSNModel(torch.nn.Module):
+class TSNModel(torch.nn.Linear):
     def __init__(self, config):
-        super(TSNModel, self).__init__()
+        super(TSNModel, self).__init__(config.S_x,
+                                       config.S_y,
+                                       bias=False,
+                                       )
         self.config = config
         ## Notebook Network
         # Generate P random binary indices with sparseness a
@@ -58,34 +63,48 @@ class TSNModel(torch.nn.Module):
         self.W_s = np.zeros([self.config.S_x, self.config.S_y])
         # set student's weights, with zero weight initialization
 
+        # Notebook-Student weights
+        self.W_NS = None
+
+
     def forward(self, x):
-        return {
-            'student': np.matmul(x, self.W_s),
-            'notebook': np.matmul(
-                np.matmul(
-                    np.matmul(x, self.W_S_N_Lin),
-                    self.W_N
-                ),
-                self.W_N_S_Lout
-            )
-        }
+        return linear(x, self.weight, self.bias)
+
+    #     return {
+    #         'student': np.matmul(x, self.W_s),
+    #         'notebook': np.matmul(
+    #             np.matmul(
+    #                 np.matmul(x, self.W_NS['S->N in']),
+    #                 self.W_N
+    #             ),
+    #             self.W_NS['N->S out']
+    #         )
+    #     }
 
     def W_S_N_Learning(self, x, y):
         # Hebbian learning for Notebook-Student weights (bidirectional)
-
+        weights = {}
         norm = (
                 self.config.N_n_units * self.config.N_a * (1 - self.config.N_a)
         )
         # Notebook to student weights, for reactivating student
-        self.W_N_S_Lin = np.matmul((self.N_patterns - self.config.N_a).T, x)
-        self.W_N_S_Lin /= norm
+        weights['N->S in'] = np.matmul((self.N_patterns - self.config.N_a).T, x)
+        weights['N->S in'] /= norm
 
-        self.W_N_S_Lout = np.matmul((self.N_patterns - self.config.N_a).T, y)
-        self.W_N_S_Lout /= norm
+        weights['N->S out'] = np.matmul((self.N_patterns -
+                                         self.config.N_a).T, y)
+        weights['N->S out'] /= norm
 
         # student to notebook weights, for providing partial cues
-        self.W_S_N_Lin = np.matmul(x.T, (self.N_patterns - self.config.N_a))
-        self.W_S_N_Lout = np.matmul(y.T, (self.N_patterns - self.config.N_a))
+        weights['S->N in'] = np.matmul(x.T, (self.N_patterns - self.config.N_a))
+        weights['S->N out'] = np.matmul(y.T, (self.N_patterns -
+                                              self.config.N_a))
+        if self.W_NS is None:
+            self.W_NS = weights
+        else:
+            self.W_NS = {
+                k: (self.W_NS[k] + weights[k])/2 for k in weights.keys()
+            }
 
     def pattern_completion_through_recurrent_activation(self):
         # Dynamic threshold
@@ -201,8 +220,8 @@ class TSNModel(torch.nn.Module):
         return np.matmul(Activity_notebook_train, self.W_N_S_Lout)
 
     def reactivate_pattern(self, pattern):
-        return (np.matmul(pattern, self.W_N_S_Lin),
-                np.matmul(pattern, self.W_N_S_Lout))
+        return (np.matmul(pattern, self.W_NS['N->S in']),
+                np.matmul(pattern, self.W_NS['N->S out'] ))
 
 class TSN_DTProcessor_config(proteam.dt_project.DT_config):
     def __init__(self,
@@ -258,15 +277,19 @@ class TSN_DTProcessor(_Processor):
 
 class TSNPractitioner_config(proteam.ml_project.PTPractitioner_config):
     def __init__(self,
+                 batch_epochs=100,
                  **kwargs):
-        super(TSNPractitioner_config, self ).__init__('TSNPractitioner',
-                                                     **kwargs)
-
-class TSNPractitioner(object):
-    def __init__(self, model, dt_processor, config=TSNPractitioner_config()):
-        self.config = config
-        self.model = model
-        self.dt_processor = dt_processor
+        super(TSNPractitioner_config, self ).__init__(**kwargs)
+        # batch scheme parameters
+        self.batch_epochs = batch_epochs
+class TSNPractitioner(PT_Practitioner):
+    def __init__(self, model, dt_processor, manager,
+                 config=TSNPractitioner_config()):
+        super().__init__(model, manager, dt_processor, config)
+        pass
+        # self.config = config
+        # self.model = model
+        # self.dt_processor = dt_processor
 
     def get_N_error(self, x, y):
         N_S_output_train = self.model.seed_the_notebook(
@@ -284,65 +307,145 @@ class TSNPractitioner(object):
             error_N_train.reshape((1, 1))
         )
         return error_N_train_vector[:, 0]
-    def train(self):
-        print('')
-        # train the input out transforms of the notebook
-        self.model.W_S_N_Learning(self.dt_processor.x_t_input,
-                                  self.dt_processor.y_t_output)
-        # array for storing retrieved notebook patterns, pre-calculating all epochs for speed considerations
-        S_error_train = []
-        S_error_test = []
-        for epoch in tqdm(range(self.config.n_epochs), desc='Epoch'):
-            # Simulates hippocampal reactivations with random binary seed patterns.
-            # Retrieval process:
-            # (1) Dynamic threshold ensures sparse pattern retrieval,
-            # preventing silent attractor dominance.
-            # (2) Fixed-threshold completes the pattern
-            # with global inhibition, allowing varied sparseness.
-            # Silent state occurs if seed is far from encoded patterns.
-            Activity_dyn_t = \
-                self.model.pattern_completion_through_recurrent_activation()
+    def train_model(self):
 
-            # Second round of pattern completion, with fix threshold
-            N_pattern_reactivated = (
-                self.model.pattern_completion_with_fix_threshold(Activity_dyn_t)
-            )
-            ## Generate offline training data from notebook reactivations
-            N_S_input, N_S_output = self.model.reactivate_pattern(N_pattern_reactivated)
+        # Set up data
+        tr_dtldr = self.setup_dataloader('training')
 
-            S_prediction = self.model.forward(
-                self.dt_processor.x_t_input
-            )['student']
-            S_prediction_test = self.model.forward(
-                self.dt_processor.x_t_input_test
-            )['student']
+        if hasattr(self.data_processor, 'vl_dset'):
+            vl_dtldr = self.setup_dataloader('validation')
+        else:
+            vl_dtldr = None
+        self.setup_steps(len(tr_dtldr))
+        self.setup_loss_functions()
+        self.setup_training_accessories()
 
-            # Train error
-            delta_train = self.dt_processor.y_t_output - S_prediction
-            S_error_train.append((delta_train ** 2).mean())
+        print('ML Message: ')
+        print('-' * 5 + ' ' + self.practitioner_name + ' Practitioner Message:  \
+                    The Beginning of Training ')
 
-            # Generalization error
-            delta_test = self.dt_processor.y_t_output_test - S_prediction_test
-            S_error_test.append((delta_test ** 2).mean())
+        # beginning epoch loop
+        for epoch in range(1, self.config.n_epochs + 1):
 
-            # Grad descent
-            w_delta = np.matmul(N_S_input.T, N_S_output)
-            w_delta -= self.model.forward(
-                np.matmul(N_S_input.T, N_S_input)
-            )['student']
-            self.model.W_s = self.model.W_s + self.config.lr * w_delta
+            epoch_iterator = tqdm(tr_dtldr, desc="Epoch " + str(epoch)
+                                                 + " Iteration: ",
+                                  position=0, leave=True,
+                                  ncols=80
+                                  )
+            epoch_iterator.set_postfix({'loss': 'Initialized'})
+            tr_loss = []
+            # begin batch loop
+            for batch_idx, data in enumerate(epoch_iterator):
+                print('')
+                # Model will not be trained more steps than asked for
+                if self.config.trained_steps >= self.config.n_steps:
+                    break
+                self.config.trained_steps += 1
 
-        # Seed the notebook with original patterns to calculate training error.
-        # Seed with student input via Notebook weights, complete the pattern,
-        # and use the retrieved pattern to activate the student's output through
-        # Notebook-to-Student weights.
-        N_training_error = self.get_N_error(self.dt_processor.x_t_input,
-                                            self.dt_processor.y_t_output)
-        N_test_error = self.get_N_error(self.dt_processor.x_t_input_test,
-                                        self.dt_processor.y_t_output_test)
-        return {'student_train_error': np.array(S_error_train),
-                'student_test_error': np.array(S_error_test),
-                'notebook_train_error': N_training_error,
-                'notebook_test_error': N_test_error}
+                btch_x, btch_y = self.organize_input_and_output(data)
+
+                btch_x = torch.nn.Flatten()(btch_x)
+                btch_y = btch_y[:,np.newaxis]
+                # btch_y = torch.nn.Flatten()(btch_y[0])
+                # btch_y = btch_y.numpy()[:,np.newaxis]
+
+                # train the input out transforms of the notebook
+                self.model.W_S_N_Learning(
+                    btch_x,
+                    btch_y
+                )
+
+                # array for storing retrieved notebook patterns, pre-calculating all epochs for speed considerations
+                S_error_train = []
+                batch_epoch_iterator = tqdm(range(self.config.batch_epochs), desc="Batch_epoch ",
+                                      position=0, leave=True,
+                                      ncols=70
+                                      )
+                batch_epoch_iterator.set_postfix({'loss': 'Initialized'})
+                for batch_epoch in batch_epoch_iterator:
+                    # Simulates hippocampal reactivations with random binary seed patterns.
+                    # Retrieval process:
+                    # (1) Dynamic threshold ensures sparse pattern retrieval,
+                    # preventing silent attractor dominance.
+                    # (2) Fixed-threshold completes the pattern
+                    # with global inhibition, allowing varied sparseness.
+                    # Silent state occurs if seed is far from encoded patterns.
+                    Activity_dyn_t = \
+                        self.model.pattern_completion_through_recurrent_activation()
+
+                    # Second round of pattern completion, with fix threshold
+                    N_pattern_reactivated = (
+                        self.model.pattern_completion_with_fix_threshold(
+                            Activity_dyn_t)
+                    )
+                    ## Generate offline training data from notebook reactivations
+                    N_S_input, N_S_output = self.model.reactivate_pattern(
+                        N_pattern_reactivated)
+
+                    self.model.train()
+                    self.optmzr.zero_grad()
+
+                    pred = self.model(N_S_input.to(torch.float32))
+
+                    loss = self.calculate_loss(
+                        F.log_softmax(pred/5, dim=-1),
+                        F.softmax(N_S_output.to(torch.float32)/5, dim=-1))
+                    loss.backward()
+                    self.optmzr.step()
+                    # # Grad descent
+                    # w_delta = np.matmul(N_S_input.T, N_S_output)
+                    # w_delta -= self.model.forward(
+                    #     np.matmul(N_S_input.T, N_S_input)
+                    # )['student']
+                    # self.model.W_s = self.model.W_s + self.config.lr * w_delta
+
+                    # Student prediction
+                    S_prediction = self.model.forward(
+                        btch_x
+                    )
+
+                    # Train error
+                    delta_train = btch_y - S_prediction
+                    delta_train = (delta_train ** 2).mean()
+                    S_error_train.append(delta_train.item())
+
+                    batch_epoch_iterator.set_postfix({'loss': delta_train.item()})
 
 
+
+
+                loss = np.mean(S_error_train)
+                dir = 'C:\Project_Data\saves'
+                import matplotlib.pyplot as plt
+                fig, axs = plt.subplots(1, 2)
+                axs[0].imshow(btch_x[0].reshape(28, 28), cmap='gray')
+                axs[0].axis('off')
+                axs[0].set_title(str(btch_y[0].argmax()))
+                axs[1].imshow(N_S_input[0].reshape(28, 28), cmap='gray')
+                axs[1].axis('off')
+                axs[1].set_title(str(btch_y[0].argmax()))
+                plt.savefig(dir + f'/{self.config.trained_steps}.png')
+                plt.close(fig)
+
+                # report and record the loss
+                epoch_iterator.set_postfix({'loss': loss.item()})
+                tr_loss.append(loss.item())
+
+            # Validation
+            vl_loss = str(self.validate_model(vl_dtldr))
+            print('Validation Loss: ' + vl_loss)
+        print('ML Message: Finished Training ' + self.practitioner_name)
+
+    def validate_model(self, val_dataloader):
+        print('Running Validation ')
+        val_loss = []
+        with torch.no_grad():
+            for data in val_dataloader:
+                btch_x = torch.nn.Flatten()(data['X'])
+                btch_y = torch.nn.Flatten()(data['y'][0])
+                S_prediction = self.model.forward(
+                    btch_x
+                )
+                delta_val = btch_y - S_prediction
+                val_loss.append((delta_val ** 2).mean().item())
+        return np.mean(val_loss)

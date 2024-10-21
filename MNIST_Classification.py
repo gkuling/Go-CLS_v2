@@ -16,12 +16,13 @@ import argparse
 
 import pandas as pd
 import numpy as np
+from project_team.dt_project.dt_processing import _TensorProcessing
 from torchvision import datasets
 from sklearn.metrics import accuracy_score
 
 import project_team as proteam
 import os
-from default_arguements import dt_args
+from default_arguements import dt_args, ml_args
 
 from TSN import TSNModel_config, TSNPractitioner_config, \
     TSNModel, TSNPractitioner
@@ -82,7 +83,7 @@ io_args = {
     'y_domain': [_ for _ in range(10)],
     'group_data_by':None,
     'test_size': 0.1,
-    'validation_size': 0.9,
+    'validation_size': 0.1,
     'stratify_by': 'label',
     'r_seed': r_seed
 }
@@ -94,29 +95,45 @@ manager = proteam.io_project.Pytorch_Manager(
 )
 
 # Prepare Processor
+dt_args['one_hot_encode'] = False
+dt_args['max_classes'] = 10
+
 dt_project_cnfg = proteam.dt_project.Image_Processor_config(**dt_args)
 
 processor = proteam.dt_project.Image_Processor(
     image_processor_config=dt_project_cnfg
 )
 
+# class y_update(_TensorProcessing):
+#
+#     def __call__(self, ipt):
+#         ipt['y'] = [np.array(ipt['y'])[np.newaxis, ...]]
+#         return ipt
+#
+# processor.add_pretransforms([
+#     y_update(),
+# ])
 # Prepare model
 mdl_config = TSNModel_config(
     S_x=784,
-    S_y=10,
-    P=630,
-    N_n_units=200
+    S_y=1,
+    P=128,
+    N_n_units=5000,
+    N_ncycle=16
 )
 
 mdl = TSNModel(mdl_config)
 
+ml_args['batch_size'] = 128
+ml_args['n_epochs'] = 10
+ml_args['lr'] = 0.0015
+ml_args['batch_epochs'] = 10
 # Prepare Practitioner
-pt_config = TSNPractitioner_config(
-    n_epochs=10,
-    lr=0.000015
-)
+pt_config = TSNPractitioner_config(**ml_args)
 
-practitioner = TSNPractitioner(config=pt_config, model=mdl, dt_processor=processor)
+practitioner = TSNPractitioner(config=pt_config, model=mdl,
+                               dt_processor=processor,
+                               manager=manager)
 
 # Perform Training
 manager.prepare_for_experiment()
@@ -124,47 +141,7 @@ manager.prepare_for_experiment()
 processor.set_training_data(manager.root)
 processor.set_validation_data(manager.root)
 
-def one_hot_encode_integer(value, num_classes):
-    """
-    One hot encode an integer.
-
-    Parameters:
-    value (int): Input integer to be one hot encoded.
-    num_classes (int): Number of classes for one hot encoding.
-
-    Returns:
-    np.ndarray: One hot encoded vector.
-    """
-    one_hot_vector = np.zeros(num_classes)
-    one_hot_vector[value] = 1
-    return one_hot_vector
-
-processor.x_t_input = np.array(
-    [np.array(np.array(img['X']).flatten())/255 for img in processor.tr_dset]
-)
-# m = processor.x_t_input.mean(axis=0).mean()
-# s = processor.x_t_input.std(axis=0).std()
-# processor.x_t_input = (processor.x_t_input - m) / s
-processor.x_t_input = processor.x_t_input
-
-processor.y_t_output = np.array(
-    [one_hot_encode_integer(img['y'], 10) for img in processor.tr_dset]
-)
-processor.y_t_output = processor.y_t_output
-
-processor.x_t_input_test = np.array(
-    [np.array(np.array(img['X']).flatten())/255 for img in processor.vl_dset]
-)
-# processor.x_t_input_test = (processor.x_t_input_test - m) / s
-processor.x_t_input_test = processor.x_t_input_test
-
-processor.y_t_output_test = np.array(
-    [one_hot_encode_integer(img['y'], 10) for img in processor.vl_dset]
-)
-processor.y_t_output_test = processor.y_t_output_test
-
-
-errors = practitioner.train()
+errors = practitioner.train_model()
 
 # Perform Inference
 manager.prepare_for_inference()
