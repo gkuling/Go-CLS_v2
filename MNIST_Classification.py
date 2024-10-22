@@ -25,8 +25,7 @@ import os
 from default_arguements import dt_args, ml_args
 
 from TSN import TSNModel_config, TSNPractitioner_config, \
-    TSNModel, TSNPractitioner
-
+    TSNModel, TSNPractitioner, NotebookNetwork, NotebookPractitioner
 r_seed = 20230117
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
 parser.add_argument('--working_dir',type=str,
@@ -95,7 +94,7 @@ manager = proteam.io_project.Pytorch_Manager(
 )
 
 # Prepare Processor
-dt_args['one_hot_encode'] = False
+dt_args['one_hot_encode'] = True
 dt_args['max_classes'] = 10
 
 dt_project_cnfg = proteam.dt_project.Image_Processor_config(**dt_args)
@@ -104,34 +103,34 @@ processor = proteam.dt_project.Image_Processor(
     image_processor_config=dt_project_cnfg
 )
 
-# class y_update(_TensorProcessing):
-#
-#     def __call__(self, ipt):
-#         ipt['y'] = [np.array(ipt['y'])[np.newaxis, ...]]
-#         return ipt
-#
-# processor.add_pretransforms([
-#     y_update(),
-# ])
+class y_update(_TensorProcessing):
+
+    def __call__(self, ipt):
+        ipt['y'] = [np.array(ipt['y'])[np.newaxis, ...]]
+        return ipt
+
+processor.add_pretransforms([
+    y_update(),
+])
 # Prepare model
 mdl_config = TSNModel_config(
     S_x=784,
-    S_y=1,
+    S_y=10,
     P=128,
-    N_n_units=5000,
-    N_ncycle=16
+    N_n_units=512,
+    N_ncycle=8
 )
 
-mdl = TSNModel(mdl_config)
+mdl = NotebookNetwork(mdl_config)
 
 ml_args['batch_size'] = 128
 ml_args['n_epochs'] = 10
-ml_args['lr'] = 0.0015
-ml_args['batch_epochs'] = 10
+ml_args['lr'] = 0.001
+ml_args['batch_epochs'] = 100
 # Prepare Practitioner
 pt_config = TSNPractitioner_config(**ml_args)
 
-practitioner = TSNPractitioner(config=pt_config, model=mdl,
+practitioner = NotebookPractitioner(config=pt_config, model=mdl,
                                dt_processor=processor,
                                manager=manager)
 

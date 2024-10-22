@@ -9,7 +9,7 @@ ml_args = {
     'optimizer':'adadelta',
     'lr':1.0,
     'grad_clip':None,
-    'loss_type':'MSE',
+    'loss_type':'NLL',
     'affine_aug':False,
     'add_Gnoise':False,
     'gaussian_std':1.0,
